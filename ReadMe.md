@@ -1,20 +1,26 @@
-# 💬🧠 Dhurandar Chat RAG
+# 💬🧠 Dhurandar RAG Pro
 
-A ChatGPT-style Retrieval-Augmented Generation (RAG) application where users can upload documents (PDF/TXT) and ask questions about them.
+An advanced ChatGPT-style RAG (Retrieval-Augmented Generation) system for querying PDFs and text documents.
 
 ---
 
 ## 🚀 Features
 
-- 💬 ChatGPT-like UI using Streamlit
-- 📄 Upload PDF or TXT files
-- ✂️ Smart chunking with overlap
-- 🧠 Embeddings using Sentence Transformers (FREE)
-- ⚡ Fast retrieval using FAISS
-- 🤖 Answer generation using Groq LLM
-- 📂 Expandable retrieved context
-- 🔐 Secure API key handling (Streamlit Secrets)
+- 💬 ChatGPT-like UI
+- 📂 Multi-document upload (PDF + TXT)
+- 🧠 Semantic search using FAISS
+- 🔍 Cosine similarity optimization
+- 📄 Source-aware answers (metadata tracking)
+- 💡 Chat memory (context-aware conversations)
+- ⚡ Fast embeddings using Sentence Transformers
+- 🔐 Secure API handling (Streamlit Secrets)
 
 ---
 
-## 📁 Project Structure
+## ⚙️ Setup
+
+```bash
+git clone <repo>
+cd dhurandar-rag
+pip install -r requirements.txt
+streamlit run app.py
