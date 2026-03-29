@@ -4,7 +4,7 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 import faiss
 import numpy as np
 import os
-from PyPDF2 import PdfReader
+import fitz  # PyMuPDF
 
 # ---------------------------
 # 🔐 API KEY
@@ -17,17 +17,17 @@ except:
 client = Groq(api_key=GROQ_API_KEY)
 
 # ---------------------------
-# 📄 PDF TEXT EXTRACTION
+# 📄 EXTRACT TEXT + STORE DOC
 # ---------------------------
 def extract_text(file):
     if file.type == "application/pdf":
-        reader = PdfReader(file)
+        doc = fitz.open(stream=file.read(), filetype="pdf")
         text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
-        return text
+        for page in doc:
+            text += page.get_text()
+        return text, doc
     else:
-        return file.read().decode("utf-8")
+        return file.read().decode("utf-8"), None
 
 # ---------------------------
 # ✂️ CHUNKING
@@ -36,22 +36,23 @@ def chunk_text(text, size=500, overlap=100):
     chunks = []
     start = 0
     while start < len(text):
-        chunk = text[start:start+size]
-        chunks.append(chunk)
+        chunks.append(text[start:start+size])
         start += size - overlap
     return chunks
 
 # ---------------------------
-# ⚡ PROCESS DOCS
+# ⚡ PROCESS FILES
 # ---------------------------
 @st.cache_resource
 def process(files):
     data = []
+    docs = {}
 
     for file in files:
-        text = extract_text(file)
-        chunks = chunk_text(text)
+        text, doc = extract_text(file)
+        docs[file.name] = doc
 
+        chunks = chunk_text(text)
         for c in chunks:
             data.append({"text": c, "source": file.name})
 
@@ -67,82 +68,73 @@ def process(files):
 
     reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-    return data, embed_model, index, reranker
+    return data, embed_model, index, reranker, docs
 
 # ---------------------------
-# 🔍 HYBRID SEARCH
+# 🔍 SEARCH + RERANK
 # ---------------------------
-def hybrid_search(query, data, model, index, top_k=5):
+def retrieve(query, data, model, index, reranker, top_k):
     q_emb = model.encode([query]).astype("float32")
     faiss.normalize_L2(q_emb)
 
-    D, I = index.search(q_emb, top_k)
+    D, I = index.search(q_emb, 10)
 
-    results = []
-    for idx, score in zip(I[0], D[0]):
-        chunk = data[idx]
-        keyword_score = query.lower() in chunk["text"].lower()
-        combined_score = float(score) + (0.1 if keyword_score else 0)
+    candidates = []
+    for idx in I[0]:
+        candidates.append(data[idx])
 
-        results.append({
-            "text": chunk["text"],
-            "source": chunk["source"],
-            "score": combined_score
-        })
-
-    return sorted(results, key=lambda x: x["score"], reverse=True)
-
-# ---------------------------
-# 🔁 RERANK
-# ---------------------------
-def rerank(query, results, reranker, top_k=3):
-    pairs = [[query, r["text"]] for r in results]
+    pairs = [[query, c["text"]] for c in candidates]
     scores = reranker.predict(pairs)
 
-    for i, r in enumerate(results):
-        r["rerank_score"] = scores[i]
+    for i, c in enumerate(candidates):
+        c["score"] = scores[i]
 
-    return sorted(results, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
+    return sorted(candidates, key=lambda x: x["score"], reverse=True)[:top_k]
 
 # ---------------------------
-# 🤖 STREAMING RAG
+# 🤖 RAG + STREAMING
 # ---------------------------
-def rag(query, history, data, model, index, reranker, top_k):
-    results = hybrid_search(query, data, model, index, top_k)
-    results = rerank(query, results, reranker)
-
+def rag(query, history, results, mode):
     context = "\n".join([r["text"] for r in results])
+
+    if mode == "Summarize":
+        user_prompt = f"Summarize this:\n{context}"
+    else:
+        user_prompt = f"Context:\n{context}\n\nQuestion: {query}"
 
     messages = [{"role": "system", "content": "Answer only from context."}]
     messages += history[-5:]
+    messages.append({"role": "user", "content": user_prompt})
 
-    messages.append({
-        "role": "user",
-        "content": f"Context:\n{context}\n\nQuestion: {query}"
-    })
-
-    response = client.chat.completions.create(
+    stream = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=messages,
         stream=True
     )
 
-    return response, results
+    return stream
 
 # ---------------------------
 # 🎨 UI
 # ---------------------------
-st.set_page_config(page_title="Dhurandar Elite RAG", layout="wide")
-st.title("💬🧠 Dhurandar Elite RAG")
+st.set_page_config(layout="wide")
+st.title("💬🧠 Dhurandar PRO++")
+
+# Sidebar controls
+mode = st.sidebar.radio("Mode", ["Q&A", "Summarize"])
+top_k = st.sidebar.slider("Top-K", 1, 10, 3)
 
 uploaded_files = st.file_uploader(
-    "Upload files", type=["pdf", "txt"], accept_multiple_files=True
+    "Upload PDFs or TXT",
+    type=["pdf", "txt"],
+    accept_multiple_files=True
 )
 
-top_k = st.slider("Top-K Chunks", 1, 10, 3)
+# Layout
+col1, col2 = st.columns([2, 1])
 
 if uploaded_files:
-    data, model, index, reranker = process(uploaded_files)
+    data, model, index, reranker, docs = process(uploaded_files)
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -150,48 +142,59 @@ if uploaded_files:
     if "history" not in st.session_state:
         st.session_state.history = []
 
-    # Chat history
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    with col1:
+        # Chat UI
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-    query = st.chat_input("Ask anything...")
+        query = st.chat_input("Ask something...")
 
-    if query:
-        st.chat_message("user").markdown(query)
-        st.session_state.messages.append({"role": "user", "content": query})
-        st.session_state.history.append({"role": "user", "content": query})
+        if query:
+            st.chat_message("user").markdown(query)
+            st.session_state.messages.append({"role": "user", "content": query})
+            st.session_state.history.append({"role": "user", "content": query})
 
-        stream, results = rag(
-            query,
-            st.session_state.history,
-            data,
-            model,
-            index,
-            reranker,
-            top_k
-        )
+            results = retrieve(query, data, model, index, reranker, top_k)
+            stream = rag(query, st.session_state.history, results, mode)
 
-        with st.chat_message("assistant"):
-            response_text = ""
-            placeholder = st.empty()
+            with st.chat_message("assistant"):
+                text = ""
+                placeholder = st.empty()
 
-            for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    response_text += chunk.choices[0].delta.content
-                    placeholder.markdown(response_text)
+                for chunk in stream:
+                    if chunk.choices[0].delta.content:
+                        text += chunk.choices[0].delta.content
+                        placeholder.markdown(text)
 
-            with st.expander("📄 Sources"):
-                for r in results:
-                    st.write(f"**{r['source']} (score: {round(r['rerank_score'], 3)})**")
-                    st.write(r["text"])
+                # Sources
+                with st.expander("📄 Sources"):
+                    for r in results:
+                        st.write(f"**{r['source']}**")
+                        st.write(r["text"])
 
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
-        st.session_state.history.append({"role": "assistant", "content": response_text})
+            st.session_state.messages.append({"role": "assistant", "content": text})
+            st.session_state.history.append({"role": "assistant", "content": text})
 
-# ---------------------------
-# 📜 EXPORT CHAT
-# ---------------------------
-if st.session_state.get("messages"):
-    chat_text = "\n".join([m["content"] for m in st.session_state.messages])
-    st.download_button("Download Chat", chat_text, "chat.txt")
+    # ---------------------------
+    # 📄 DOCUMENT PREVIEW + HIGHLIGHT
+    # ---------------------------
+    with col2:
+        st.subheader("📄 Document Preview")
+
+        for file_name, doc in docs.items():
+            if doc:
+                st.write(f"### {file_name}")
+
+                page = doc[0]
+                text = page.get_text()
+
+                if st.session_state.get("messages"):
+                    last_answer = st.session_state.messages[-1]["content"]
+
+                    # highlight simple match
+                    for inst in page.search_for(last_answer[:50]):
+                        page.add_highlight_annot(inst)
+
+                pix = page.get_pixmap()
+                st.image(pix.tobytes())
