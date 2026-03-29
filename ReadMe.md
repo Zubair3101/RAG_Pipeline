@@ -1,26 +1,37 @@
-# 💬🧠 Dhurandar RAG Pro
+# 💬🧠 Dhurandar Elite RAG
 
-An advanced ChatGPT-style RAG (Retrieval-Augmented Generation) system for querying PDFs and text documents.
+An advanced production-ready RAG system with hybrid search, reranking, and ChatGPT-style UI.
 
 ---
 
 ## 🚀 Features
 
-- 💬 ChatGPT-like UI
-- 📂 Multi-document upload (PDF + TXT)
-- 🧠 Semantic search using FAISS
-- 🔍 Cosine similarity optimization
-- 📄 Source-aware answers (metadata tracking)
-- 💡 Chat memory (context-aware conversations)
-- ⚡ Fast embeddings using Sentence Transformers
-- 🔐 Secure API handling (Streamlit Secrets)
+- 💬 ChatGPT-like interface
+- 📂 Multi-PDF + TXT support
+- 🔍 Hybrid search (FAISS + keyword)
+- 🔁 Reranking using cross-encoder
+- ⚡ Streaming responses
+- 📊 Source ranking with scores
+- 🧠 Chat memory
+- 🎛 Top-K control
+- 📜 Chat export
+
+---
+
+## 🧠 Architecture
+
+1. Upload documents
+2. Chunk text
+3. Generate embeddings
+4. Store in FAISS
+5. Hybrid retrieval (vector + keyword)
+6. Rerank results
+7. LLM generates answer
 
 ---
 
 ## ⚙️ Setup
 
 ```bash
-git clone <repo>
-cd dhurandar-rag
 pip install -r requirements.txt
 streamlit run app.py
