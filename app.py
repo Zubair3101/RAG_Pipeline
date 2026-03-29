@@ -4,7 +4,9 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 import faiss
 import numpy as np
 import os
-import fitz  # PyMuPDF
+import fitz
+from PIL import Image
+from transformers import pipeline
 
 # ---------------------------
 # 🔐 API KEY
@@ -17,15 +19,33 @@ except:
 client = Groq(api_key=GROQ_API_KEY)
 
 # ---------------------------
-# 📄 EXTRACT TEXT + STORE DOC
+# 🤖 LOAD IMAGE MODEL (FREE)
+# ---------------------------
+@st.cache_resource
+def load_image_model():
+    return pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
+
+image_model = load_image_model()
+
+# ---------------------------
+# 📄 EXTRACT TEXT
 # ---------------------------
 def extract_text(file):
+    # PDF
     if file.type == "application/pdf":
         doc = fitz.open(stream=file.read(), filetype="pdf")
         text = ""
         for page in doc:
             text += page.get_text()
         return text, doc
+
+    # IMAGE
+    elif file.type in ["image/png", "image/jpeg"]:
+        image = Image.open(file)
+        caption = image_model(image)[0]["generated_text"]
+        return f"Image description: {caption}", None
+
+    # TXT
     else:
         return file.read().decode("utf-8"), None
 
@@ -71,7 +91,7 @@ def process(files):
     return data, embed_model, index, reranker, docs
 
 # ---------------------------
-# 🔍 SEARCH + RERANK
+# 🔍 RETRIEVE + RERANK
 # ---------------------------
 def retrieve(query, data, model, index, reranker, top_k):
     q_emb = model.encode([query]).astype("float32")
@@ -79,9 +99,7 @@ def retrieve(query, data, model, index, reranker, top_k):
 
     D, I = index.search(q_emb, 10)
 
-    candidates = []
-    for idx in I[0]:
-        candidates.append(data[idx])
+    candidates = [data[idx] for idx in I[0]]
 
     pairs = [[query, c["text"]] for c in candidates]
     scores = reranker.predict(pairs)
@@ -98,13 +116,13 @@ def rag(query, history, results, mode):
     context = "\n".join([r["text"] for r in results])
 
     if mode == "Summarize":
-        user_prompt = f"Summarize this:\n{context}"
+        prompt = f"Summarize:\n{context}"
     else:
-        user_prompt = f"Context:\n{context}\n\nQuestion: {query}"
+        prompt = f"Context:\n{context}\n\nQuestion: {query}"
 
     messages = [{"role": "system", "content": "Answer only from context."}]
     messages += history[-5:]
-    messages.append({"role": "user", "content": user_prompt})
+    messages.append({"role": "user", "content": prompt})
 
     stream = client.chat.completions.create(
         model="llama-3.1-8b-instant",
@@ -118,19 +136,17 @@ def rag(query, history, results, mode):
 # 🎨 UI
 # ---------------------------
 st.set_page_config(layout="wide")
-st.title("💬🧠 Dhurandar PRO++")
+st.title("💬🧠 Dhurandar Multimodal RAG")
 
-# Sidebar controls
 mode = st.sidebar.radio("Mode", ["Q&A", "Summarize"])
 top_k = st.sidebar.slider("Top-K", 1, 10, 3)
 
 uploaded_files = st.file_uploader(
-    "Upload PDFs or TXT",
-    type=["pdf", "txt"],
+    "Upload PDF, TXT, PNG, JPG",
+    type=["pdf", "txt", "png", "jpg", "jpeg"],
     accept_multiple_files=True
 )
 
-# Layout
 col1, col2 = st.columns([2, 1])
 
 if uploaded_files:
@@ -143,7 +159,6 @@ if uploaded_files:
         st.session_state.history = []
 
     with col1:
-        # Chat UI
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
@@ -167,7 +182,6 @@ if uploaded_files:
                         text += chunk.choices[0].delta.content
                         placeholder.markdown(text)
 
-                # Sources
                 with st.expander("📄 Sources"):
                     for r in results:
                         st.write(f"**{r['source']}**")
@@ -176,25 +190,10 @@ if uploaded_files:
             st.session_state.messages.append({"role": "assistant", "content": text})
             st.session_state.history.append({"role": "assistant", "content": text})
 
-    # ---------------------------
-    # 📄 DOCUMENT PREVIEW + HIGHLIGHT
-    # ---------------------------
     with col2:
-        st.subheader("📄 Document Preview")
+        st.subheader("📄 Preview")
 
-        for file_name, doc in docs.items():
-            if doc:
-                st.write(f"### {file_name}")
-
-                page = doc[0]
-                text = page.get_text()
-
-                if st.session_state.get("messages"):
-                    last_answer = st.session_state.messages[-1]["content"]
-
-                    # highlight simple match
-                    for inst in page.search_for(last_answer[:50]):
-                        page.add_highlight_annot(inst)
-
-                pix = page.get_pixmap()
-                st.image(pix.tobytes())
+        for file in uploaded_files:
+            if file.type in ["image/png", "image/jpeg"]:
+                image = Image.open(file)
+                st.image(image, caption=file.name)
