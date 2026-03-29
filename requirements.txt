@@ -5,6 +5,3 @@ faiss-cpu
 numpy
 scikit-learn
 PyMuPDF
-Pillow
-transformers
-torch
